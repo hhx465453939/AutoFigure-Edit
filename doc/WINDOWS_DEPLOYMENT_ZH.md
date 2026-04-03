@@ -157,7 +157,7 @@ uv pip install torch torchvision torchaudio --index-url https://download.pytorch
      mkdir vendor -ErrorAction SilentlyContinue
      git clone https://github.com/facebookresearch/sam3.git vendor\sam3
      .\.venv\Scripts\Activate.ps1
-     pip install -e .\vendor\sam3
+     uv pip install -e .\vendor\sam3
      ```
 
      与 [官方安装步骤](https://github.com/facebookresearch/sam3#installation) 一致：再按官方说明安装对应 CUDA 的 `torch`/`torchvision`（示例见上游 README 中的 `cu128` 索引），需要跑 notebook 时再 `pip install -e ".[notebooks]"`（在 `vendor\sam3` 目录下执行）。
