@@ -23,6 +23,10 @@
     const samPrompt = $("samPrompt");
     const samApiKeyGroup = $("samApiKeyGroup");
     const samApiKeyInput = $("samApiKey");
+    /** 每次读取 DOM，避免初始化时取不到 #useUploadedAsFigure 导致 skip 恒为 false */
+    function skipFigureEl() {
+      return document.getElementById("useUploadedAsFigure");
+    }
     let uploadedReferencePath = null;
 
     function loadInputState() {
@@ -47,6 +51,10 @@
         samBackend: samBackend?.value ?? "roboflow",
         samPrompt: samPrompt?.value ?? "icon,person,robot,animal",
         samApiKey: samApiKeyInput?.value ?? "",
+        useUploadedAsFigure: (() => {
+          const el = skipFigureEl();
+          return !!(el && el.checked);
+        })(),
         referencePath: uploadedReferencePath,
         referenceUrl: referencePreview?.src ?? "",
         referenceStatus: referenceStatus?.textContent ?? "",
@@ -83,6 +91,12 @@
       }
       if (typeof state.samApiKey === "string" && samApiKeyInput) {
         samApiKeyInput.value = state.samApiKey;
+      }
+      if (typeof state.useUploadedAsFigure === "boolean") {
+        const ch = skipFigureEl();
+        if (ch) {
+          ch.checked = state.useUploadedAsFigure;
+        }
       }
       if (typeof state.referencePath === "string" && state.referencePath) {
         uploadedReferencePath = state.referencePath;
@@ -157,6 +171,13 @@
       });
     }
 
+    {
+      const ch = skipFigureEl();
+      if (ch) {
+        ch.addEventListener("change", saveInputState);
+      }
+    }
+
     const autoSaveFields = [
       $("methodText"),
       $("provider"),
@@ -175,9 +196,24 @@
 
     confirmBtn.addEventListener("click", async () => {
       errorMsg.textContent = "";
-      const methodText = $("methodText").value.trim();
-      if (!methodText) {
-        errorMsg.textContent = "Please provide method text.";
+      const methodText = ($("methodText").value || "").trim();
+      const skipCh = skipFigureEl();
+      const skipStep1 = !!(skipCh && skipCh.checked);
+
+      if (!skipStep1 && !methodText) {
+        errorMsg.textContent =
+          "Add method text, or check “Use uploaded image as the figure” and upload an image (then method text is optional). Hard-refresh (Ctrl+F5) if this still appears after an update.";
+        return;
+      }
+
+      if (skipStep1 && !uploadedReferencePath) {
+        errorMsg.textContent =
+          "To skip AI image generation, upload an image first (or turn off the checkbox).";
+        return;
+      }
+      if (skipStep1 && !$("apiKey").value.trim()) {
+        errorMsg.textContent =
+          "API Key is still required for SVG generation (steps 4+). Add it above or turn off skip.";
         return;
       }
 
@@ -189,11 +225,13 @@
         provider: $("provider").value,
         api_key: $("apiKey").value.trim() || null,
         optimize_iterations: parseInt($("optimizeIterations").value, 10),
-        reference_image_path: uploadedReferencePath,
         sam_backend: $("samBackend").value,
         sam_prompt: $("samPrompt").value.trim() || null,
         sam_api_key: $("samApiKey").value.trim() || null,
+        skip_ai_image_generation: skipStep1,
+        reference_image_path: uploadedReferencePath || null,
       };
+
       if (payload.sam_backend === "local") {
         payload.sam_api_key = null;
       }
@@ -369,7 +407,7 @@
       } else if (data.state === "finished") {
         isFinished = true;
         if (typeof data.code === "number" && data.code !== 0) {
-          statusText.textContent = `Failed (code ${data.code})`;
+          statusText.textContent = `Failed (exit ${data.code}) — no SVG was produced. Open Logs and check run.log (e.g. local SAM3: pip install einops).`;
         } else {
           statusText.textContent = "Done";
         }

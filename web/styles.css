@@ -225,6 +225,21 @@ select {
   margin-top: 8px;
 }
 
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.checkbox-row input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
 .is-hidden {
   display: none !important;
 }

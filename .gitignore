@@ -13,6 +13,9 @@ env/
 # Local clone of upstream SAM3 (pip install -e ./vendor/sam3); large — do not commit
 vendor/sam3/
 
+# Hugging Face hub cache (default HF_HOME = models/huggingface)
+models/huggingface/
+
 # Local runtime artifacts
 outputs/
 uploads/

@@ -64,16 +64,80 @@ Box合并功能 (--merge_threshold):
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent
+
+
+# ============================================================================
+# Runtime env loading (before torch / transformers so HF cache path is respected)
+# ============================================================================
+
+def _load_local_env_file(env_path: str = ".env") -> None:
+    """Best-effort .env loader for local runs without python-dotenv."""
+    path = Path(env_path)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    if not path.is_file():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip().strip('"').strip("'")
+        os.environ[key] = value
+
+
+def _ensure_project_hf_home() -> None:
+    """Default Hugging Face cache under repo (avoids filling system profile drive)."""
+    if os.environ.get("HF_HOME"):
+        return
+    hf_home = REPO_ROOT / "models" / "huggingface"
+    hf_home.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(hf_home.resolve())
+
+
+_load_local_env_file()
+_ensure_project_hf_home()
+
+
+def _ensure_sam3_edt_no_triton_fallback() -> None:
+    """Pre-register SciPy EDT when Triton is missing (e.g. Windows) before sam3 imports edt.py."""
+    try:
+        import triton  # noqa: F401
+        return
+    except ImportError:
+        pass
+    if "sam3.model.edt" in sys.modules:
+        return
+    import importlib.util
+
+    stub = REPO_ROOT / "support" / "sam3_edt_no_triton.py"
+    if not stub.is_file():
+        return
+    spec = importlib.util.spec_from_file_location("sam3.model.edt", stub)
+    if spec is None or spec.loader is None:
+        return
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["sam3.model.edt"] = mod
+    spec.loader.exec_module(mod)
+
+
 import argparse
 import base64
 import io
 import json
-import os
 import re
 import shutil
-import sys
+import threading
 import time
-from pathlib import Path
 from typing import Optional, List, Dict, Any, Literal
 
 import requests
@@ -623,7 +687,24 @@ def _call_openrouter_image_generation(
         'stream': False
     }
 
-    response = requests.post(api_url, headers=headers, json=payload, timeout=300)
+    print(
+        "OpenRouter 文生图：请求已发送（含参考图时响应常需数分钟；每 30s 打印一次等待提示）",
+        flush=True,
+    )
+    stop_heartbeat = threading.Event()
+
+    def _openrouter_wait_heartbeat() -> None:
+        waited = 0
+        while not stop_heartbeat.wait(30):
+            waited += 30
+            print(f"仍在等待 OpenRouter 文生图响应...（约 {waited}s）", flush=True)
+
+    hb = threading.Thread(target=_openrouter_wait_heartbeat, daemon=True)
+    hb.start()
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=300)
+    finally:
+        stop_heartbeat.set()
 
     if response.status_code != 200:
         raise Exception(f'OpenRouter API 错误: {response.status_code} - {response.text[:500]}')
@@ -941,6 +1022,25 @@ def _call_gemini_image_generation(
 # ============================================================================
 # 步骤一：调用 LLM 生成图片
 # ============================================================================
+
+def copy_input_figure_to_figure_png(src: str, dest: Path) -> None:
+    """将用户提供的本地图复制为 figure.png（统一为 RGB PNG）。"""
+    src_p = Path(src)
+    if not src_p.is_file():
+        raise ValueError(f"输入图不存在: {src}")
+    img = Image.open(src_p)
+    if img.mode == "P" and "transparency" in img.info:
+        img = img.convert("RGBA")
+    if img.mode == "RGBA":
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    img.save(dest, format="PNG")
+    print(f"已写入 figure.png: {dest}（来自 {src_p}）")
+
 
 def generate_figure_from_method(
     method_text: str,
@@ -1580,6 +1680,7 @@ def segment_with_sam3(
         backend = "fal"
 
     if backend == "local":
+        _ensure_sam3_edt_no_triton_fallback()
         from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
         import sam3
@@ -1821,7 +1922,8 @@ def _ensure_rmbg2_access_ready(rmbg_model_path: Optional[str]) -> None:
         "请先完成：\n"
         "1) 申请访问 https://huggingface.co/briaai/RMBG-2.0\n"
         "2) 在 .env 设置 HF_TOKEN=你的Read权限token\n"
-        "3) 重新运行 docker compose up -d --build"
+        "3) 本地运行时重启 python server.py / 重新执行 CLI；Docker 用户请重新构建或确保容器内 HF_TOKEN 生效\n"
+        f"（默认模型缓存目录：{REPO_ROOT / 'models' / 'huggingface'}，可用环境变量 HF_HOME 覆盖）"
     )
 
 
@@ -2773,7 +2875,7 @@ Please carefully compare and check the following **TWO MAJOR ASPECTS with EIGHT 
 def method_to_svg(
     method_text: str,
     output_dir: str = "./output",
-    api_key: str = None,
+    api_key: Optional[str] = None,
     base_url: str = None,
     provider: ProviderType = "bianxie",
     image_gen_model: str = None,
@@ -2788,6 +2890,7 @@ def method_to_svg(
     placeholder_mode: PlaceholderMode = "label",
     optimize_iterations: int = 2,
     merge_threshold: float = 0.9,
+    input_figure_path: Optional[str] = None,
 ) -> dict:
     """
     完整流程：Paper Method → SVG with Icons
@@ -2813,12 +2916,16 @@ def method_to_svg(
             - "label": 灰色填充+黑色边框+序号标签（推荐）
         optimize_iterations: 步骤 4.6 优化迭代次数（0 表示跳过优化）
         merge_threshold: Box合并阈值，重叠比例超过此值则合并（0表示不合并，默认0.9）
+        input_figure_path: 若提供，则跳过步骤一文生图，直接将该图作为 figure.png 进入后续流程
 
     Returns:
         结果字典
     """
     if not api_key:
-        raise ValueError("必须提供 api_key")
+        need_step1_llm = not input_figure_path and stop_after >= 1
+        need_svg_llm = stop_after >= 4
+        if need_step1_llm or need_svg_llm:
+            raise ValueError("必须提供 api_key（步骤 1 文生图或步骤 4+ SVG 需要 LLM）")
 
     # 获取默认配置
     config = PROVIDER_CONFIGS[provider]
@@ -2855,16 +2962,22 @@ def method_to_svg(
     if stop_after >= 3:
         _ensure_rmbg2_access_ready(rmbg_model_path)
 
-    # 步骤一：生成图片
+    # 步骤一：生成图片（可用本地图跳过文生图）
     figure_path = output_dir / "figure.png"
-    generate_figure_from_method(
-        method_text=method_text,
-        output_path=str(figure_path),
-        api_key=api_key,
-        model=image_gen_model,
-        base_url=base_url,
-        provider=provider,
-    )
+    if input_figure_path:
+        print("\n" + "=" * 60)
+        print("步骤一：跳过文生图，使用本地输入图作为 figure.png")
+        print("=" * 60)
+        copy_input_figure_to_figure_png(input_figure_path, figure_path)
+    else:
+        generate_figure_from_method(
+            method_text=method_text,
+            output_path=str(figure_path),
+            api_key=api_key,
+            model=image_gen_model,
+            base_url=base_url,
+            provider=provider,
+        )
 
     if stop_after == 1:
         print("\n" + "=" * 60)
@@ -3086,6 +3199,11 @@ if __name__ == "__main__":
         help="步骤一使用参考图片风格（需要同时提供 --reference_image_path）"
     )
     parser.add_argument("--reference_image_path", default=None, help="参考图片路径（可选）")
+    parser.add_argument(
+        "--input_figure",
+        default=None,
+        help="本地已有示意图：跳过步骤一文生图，直接作为 figure.png 进入 SAM/RMBG/SVG（与参考图风格模式二选一，优先本项）",
+    )
 
     # SAM3 参数
     parser.add_argument("--sam_prompt", default="icon,robot,animal,person", help="SAM3 文本提示，支持逗号分隔多个prompt（如 'icon,diagram,arrow'，默认: icon）")
@@ -3146,10 +3264,17 @@ if __name__ == "__main__":
         parser.error("--use_reference_image 需要 --reference_image_path")
     if args.reference_image_path and not Path(args.reference_image_path).is_file():
         parser.error(f"参考图片不存在: {args.reference_image_path}")
+    if args.input_figure and not Path(args.input_figure).is_file():
+        parser.error(f"输入图不存在: {args.input_figure}")
+    if args.input_figure and args.reference_image_path:
+        print("提示: 已指定 --input_figure，将忽略 --reference_image_path（不再走参考风格文生图）")
 
     USE_REFERENCE_IMAGE = bool(args.use_reference_image)
     REFERENCE_IMAGE_PATH = args.reference_image_path
-    if REFERENCE_IMAGE_PATH:
+    if args.input_figure:
+        USE_REFERENCE_IMAGE = False
+        REFERENCE_IMAGE_PATH = None
+    elif REFERENCE_IMAGE_PATH:
         USE_REFERENCE_IMAGE = True
 
     # 获取 method 文本：优先使用 --method_text
@@ -3157,6 +3282,9 @@ if __name__ == "__main__":
     if method_text is None:
         with open(args.method_file, 'r', encoding='utf-8') as f:
             method_text = f.read()
+    method_text = method_text or ""
+    if not method_text.strip() and not args.input_figure:
+        parser.error("需要提供 method 文本，或使用 --input_figure 跳过步骤一文生图")
 
     # 运行完整流程
     result = method_to_svg(
@@ -3177,4 +3305,5 @@ if __name__ == "__main__":
         placeholder_mode=args.placeholder_mode,
         optimize_iterations=args.optimize_iterations,
         merge_threshold=args.merge_threshold,
+        input_figure_path=args.input_figure,
     )

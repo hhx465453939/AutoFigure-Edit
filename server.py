@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import queue
 import shutil
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -86,7 +87,7 @@ class Job:
 
 
 class RunRequest(BaseModel):
-    method_text: str = Field(..., min_length=1)
+    method_text: str = Field(default="")
     provider: str = "bianxie"
     api_key: Optional[str] = None
     base_url: Optional[str] = None
@@ -100,6 +101,9 @@ class RunRequest(BaseModel):
     merge_threshold: Optional[float] = None
     optimize_iterations: Optional[int] = None
     reference_image_path: Optional[str] = None
+    input_figure_path: Optional[str] = None
+    # 为 True 时：以上传的图作为 figure.png，绝不走「参考风格文生图」路径
+    skip_ai_image_generation: bool = False
 
 
 app = FastAPI()
@@ -118,17 +122,45 @@ def get_config() -> JSONResponse:
     return JSONResponse({"svgEditAvailable": available, "svgEditPath": rel_path})
 
 
+def _resolve_under_repo(path_str: str) -> str:
+    path = Path(path_str)
+    if path.is_absolute():
+        return str(path.resolve())
+    return str((BASE_DIR / path).resolve())
+
+
 @app.post("/api/run")
 def run_job(req: RunRequest) -> JSONResponse:
     job_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
     output_dir = OUTPUTS_DIR / job_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    method_stripped = (req.method_text or "").strip()
+    if req.skip_ai_image_generation:
+        src = req.input_figure_path or req.reference_image_path
+        if not src:
+            raise HTTPException(
+                status_code=400,
+                detail="skip_ai_image_generation requires an uploaded image (reference or input_figure path).",
+            )
+    elif not method_stripped:
+        raise HTTPException(
+            status_code=400,
+            detail="method_text is required unless skip_ai_image_generation is enabled with an uploaded figure.",
+        )
+
+    if req.skip_ai_image_generation and not method_stripped:
+        method_for_cmd = (
+            "(Figure-only run: no method text provided; SVG is generated from the figure and SAM overlay images.)"
+        )
+    else:
+        method_for_cmd = method_stripped
+
     cmd = [
         PYTHON_EXECUTABLE,
         str(BASE_DIR / "autofigure2.py"),
         "--method_text",
-        req.method_text,
+        method_for_cmd,
         "--output_dir",
         str(output_dir),
         "--provider",
@@ -162,14 +194,13 @@ def run_job(req: RunRequest) -> JSONResponse:
     if req.optimize_iterations is not None:
         cmd += ["--optimize_iterations", str(req.optimize_iterations)]
 
-    reference_path = req.reference_image_path
-    if reference_path:
-        reference_path = (
-            str((BASE_DIR / reference_path).resolve())
-            if not Path(reference_path).is_absolute()
-            else reference_path
-        )
-        cmd += ["--reference_image_path", reference_path]
+    if req.skip_ai_image_generation:
+        figure_src = req.input_figure_path or req.reference_image_path
+        cmd += ["--input_figure", _resolve_under_repo(str(figure_src))]
+    elif req.input_figure_path:
+        cmd += ["--input_figure", _resolve_under_repo(str(req.input_figure_path))]
+    elif req.reference_image_path:
+        cmd += ["--reference_image_path", _resolve_under_repo(str(req.reference_image_path))]
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
@@ -252,7 +283,7 @@ def stream_events(job_id: str) -> StreamingResponse:
 
 
 @app.get("/api/artifacts/{job_id}/{path:path}")
-def get_artifact(job_id: str, path: str) -> FileResponse:
+def get_artifact(job_id: str, path: str) -> Response:
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -262,7 +293,16 @@ def get_artifact(job_id: str, path: str) -> FileResponse:
         raise HTTPException(status_code=400, detail="Invalid path")
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(candidate)
+    # Read whole file: FileResponse uses st_size as Content-Length; concurrent writes
+    # (pipeline still writing figure.png / logs) can grow the file mid-response and
+    # trigger "Response content longer than Content-Length" in uvicorn.
+    body = candidate.read_bytes()
+    media_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store, max-age=0, must-revalidate"},
+    )
 
 
 @app.get("/api/uploads/{filename}")
@@ -505,6 +545,19 @@ def _ensure_port_free(port: int) -> None:
     _terminate_pids(pids)
 
 
+@app.get("/app.js")
+def serve_app_js() -> FileResponse:
+    """Avoid stale cached app.js after UX fixes (browser often caches /app.js aggressively)."""
+    path = WEB_DIR / "app.js"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="app.js not found")
+    return FileResponse(
+        path,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store, max-age=0, must-revalidate"},
+    )
+
+
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="static")
 
 
@@ -527,9 +580,9 @@ if __name__ == "__main__":
     try:
         actual_port = find_available_port(initial_port)
         
-        print(f"--- Starting Server ---")
+        print("--- Starting Server ---")
         print(f"Local access: http://127.0.0.1:{actual_port}")
-        print(f"-----------------------")
+        print("-----------------------")
 
         uvicorn.run(
             "server:app",

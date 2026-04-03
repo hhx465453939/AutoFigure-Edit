@@ -22,9 +22,12 @@
           <textarea
             id="methodText"
             class="textarea"
-            placeholder="Paste your paper method text here..."
+            placeholder="Paste your paper method text here (optional if you enable “skip AI image generation” and upload a figure)..."
           ></textarea>
-          <div class="hint">Tip: concise, structured method text yields cleaner templates.</div>
+          <div class="hint">
+            Tip: concise method text helps when step 1 generates the figure. If you only upload a finished figure and
+            enable skip, you may leave this empty.
+          </div>
         </section>
 
         <section class="card">
@@ -87,6 +90,14 @@
               <img id="referencePreview" class="upload-preview" alt="Reference preview" />
               <div id="referenceStatus" class="hint"></div>
             </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="useUploadedAsFigure" />
+              <span>Use uploaded image as the figure (skip AI image generation; SAM/RMBG/SVG still run)</span>
+            </label>
+            <div class="hint">
+              If unchecked, the upload is only a <strong>style reference</strong> for step 1 (still calls the image
+              LLM). Step 4+ still needs your API key. When this box is checked, method text is optional.
+            </div>
           </div>
         </section>
 
@@ -97,6 +108,6 @@
       </main>
     </div>
 
-    <script src="/app.js"></script>
+    <script src="/app.js?v=20260403"></script>
   </body>
 </html>
