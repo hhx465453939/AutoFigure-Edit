@@ -82,7 +82,7 @@
 
 ### 6.1 安装 Python 与 uv
 
-- 从 [python.org](https://www.python.org/downloads/) 安装 Python 3.10+（安装时勾选 **Add python.exe to PATH**）。
+- 从 [python.org](https://www.python.org/downloads/) 安装 Python。**如果你要使用本地 SAM3，强烈建议直接用 Python 3.12.x（不要用 3.13）**（安装时勾选 **Add python.exe to PATH**）。
 - 安装 **uv**（任选其一）：
 
   ```powershell
@@ -95,7 +95,7 @@
 
 ```powershell
 cd E:\Development\AutoFigure-Edit
-uv venv
+uv venv --python 3.12
 .\.venv\Scripts\Activate.ps1
 ```
 
@@ -107,14 +107,14 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ### 6.3 安装依赖
 
-```powershell
-uv pip install -r requirements.txt
-```
-
 **PyTorch（有 NVIDIA GPU 时）**：请按本机 CUDA 版本从 [PyTorch 官网](https://pytorch.org/get-started/locally/) 选择对应命令，例如 CUDA 12.4：
 
 ```powershell
 uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+```
+
+```powershell
+uv pip install -r requirements.txt
 ```
 
 **仅 CPU** 时可直接使用 `requirements.txt` 中的 `torch` 默认源，或显式安装 CPU 轮子（以 PyTorch 文档为准）。
@@ -226,6 +226,13 @@ python autofigure2.py `
 
 - **Roboflow 解析失败 / 网络超时**  
   检查代理、防火墙；Docker 用户可参考 README 中的 `DOCKER_DNS_*`；本机可尝试更换 DNS 或使用系统代理。
+
+- **上传图片后“下一步没反应 / 卡在 local SAM3”**  
+  常见是 Python 与依赖组合不兼容（尤其是 Windows 下 Python 3.13 + `sam3` 触发 `numpy<2` 兼容问题）。典型日志会出现 `Numpy built with MINGW-W64 ... CRASHES ARE TO BE EXPECTED`，随后子进程直接退出。建议：
+  1) 使用 **Python 3.12** 重建 `.venv`；
+  2) 重新安装 `torch/torchvision`（匹配 CUDA）与 `requirements.txt`；
+  3) 重新 `pip install -e .\vendor\sam3`；
+  4) 若仍需先跑通流程，可临时改 `--sam_backend roboflow`。
 
 - **仅 CPU 运行很慢**  
   文生图与多模态调用主要耗时在网络 API；本地 RMBG/SAM 在 CPU 上会明显变慢，有条件建议 GPU + 正确 CUDA 版 PyTorch。
