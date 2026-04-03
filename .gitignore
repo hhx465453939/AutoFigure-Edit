@@ -10,6 +10,9 @@ __pycache__/
 venv/
 env/
 
+# Local clone of upstream SAM3 (pip install -e ./vendor/sam3); large — do not commit
+vendor/sam3/
+
 # Local runtime artifacts
 outputs/
 uploads/

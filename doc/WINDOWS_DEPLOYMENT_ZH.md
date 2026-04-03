@@ -114,7 +114,7 @@ uv pip install -r requirements.txt
 **PyTorch（有 NVIDIA GPU 时）**：请按本机 CUDA 版本从 [PyTorch 官网](https://pytorch.org/get-started/locally/) 选择对应命令，例如 CUDA 12.4：
 
 ```powershell
-uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 ```
 
 **仅 CPU** 时可直接使用 `requirements.txt` 中的 `torch` 默认源，或显式安装 CPU 轮子（以 PyTorch 文档为准）。
@@ -133,6 +133,8 @@ uv pip install torch torchvision torchaudio --index-url https://download.pytorch
 
 ### 6.5 SAM3：三种用法（择一）
 
+**SAM3 是什么：** 在 **AutoFigure-Edit** 里它负责对 **`figure.png` 这类示意图** 做**视觉分割**：按文字提示（如 icon、人物）找出多块区域并画框，不是对论文文本做「切分」。本质上是**图像上的区域/概念分割模型**。
+
 1. **Roboflow（Web 默认、免本地 SAM）**（推荐上手）  
    - 注册 [Roboflow](https://roboflow.com/)，设置：
 
@@ -145,16 +147,23 @@ uv pip install torch torchvision torchaudio --index-url https://download.pytorch
 2. **fal.ai**  
    - 设置 `FAL_KEY`，CLI 示例：`--sam_backend fal`。
 
-3. **本地 SAM3**  
-   - 克隆官方仓库并按其文档安装（通常对 Python/PyTorch/CUDA 要求更严）：
+3. **本地 SAM3**（代码在 [facebookresearch/sam3](https://github.com/facebookresearch/sam3)）  
+   - **装在哪都行：** `pip install -e` 只关心「磁盘上有一份源码 + 当前 venv」，**可以克隆在本仓库子目录里**，不必再在开发盘根目录多开一个平行文件夹。推荐路径示例：`AutoFigure-Edit\vendor\sam3`（需先建好 `vendor` 目录）。
+   - **版本硬约束（上游要求）：** Python **3.12+**、PyTorch **2.7+**、支持 **CUDA 12.6+** 的 GPU 驱动环境。若本机 venv 仍是 3.10，需要**新建一个 3.12 的 venv** 专门跑本项目 + 本地 SAM，或继续用 Roboflow/fal 避免抬 Python 版本。
+   - **在本项目内克隆并装进同一 venv：**
 
      ```powershell
-     git clone https://github.com/facebookresearch/sam3.git
-     cd sam3
-     pip install -e .
+     cd E:\Development\AutoFigure-Edit
+     mkdir vendor -ErrorAction SilentlyContinue
+     git clone https://github.com/facebookresearch/sam3.git vendor\sam3
+     .\.venv\Scripts\Activate.ps1
+     pip install -e .\vendor\sam3
      ```
 
-   - 权重在 HuggingFace `facebook/sam3`，可能需要登录：`huggingface-cli login`。
+     与 [官方安装步骤](https://github.com/facebookresearch/sam3#installation) 一致：再按官方说明安装对应 CUDA 的 `torch`/`torchvision`（示例见上游 README 中的 `cu128` 索引），需要跑 notebook 时再 `pip install -e ".[notebooks]"`（在 `vendor\sam3` 目录下执行）。
+
+   - **Git：** 仓库根目录 `.gitignore` 已忽略 `vendor/sam3/`，避免把整份上游代码误提交；你本地照样用，只是默认不进 Git。
+   - **权重：** HuggingFace `facebook/sam3`，需先申请访问再 `hf auth login`（或 `huggingface-cli login`）。
 
 ---
 
