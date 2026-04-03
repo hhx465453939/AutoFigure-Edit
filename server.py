@@ -97,6 +97,7 @@ class RunRequest(BaseModel):
     sam_backend: Optional[str] = None
     sam_api_key: Optional[str] = None
     sam_max_masks: Optional[int] = None
+    sam3_checkpoint: Optional[str] = None
     placeholder_mode: Optional[str] = None
     merge_threshold: Optional[float] = None
     optimize_iterations: Optional[int] = None
@@ -191,6 +192,8 @@ def run_job(req: RunRequest) -> JSONResponse:
         cmd += ["--sam_api_key", req.sam_api_key]
     if req.sam_max_masks is not None:
         cmd += ["--sam_max_masks", str(req.sam_max_masks)]
+    if req.sam3_checkpoint:
+        cmd += ["--sam3_checkpoint", _resolve_under_repo(str(req.sam3_checkpoint))]
     if req.optimize_iterations is not None:
         cmd += ["--optimize_iterations", str(req.optimize_iterations)]
 

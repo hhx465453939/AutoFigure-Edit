@@ -150,6 +150,40 @@ uv pip install -r requirements.txt
 - **权限未通过**：日志停在访问 `.../resolve/main/config.json`、报错 **`GatedRepoError` / 403**，或 HF 提示 **awaiting review** → 属于 **门禁未生效**，与带宽无关；需等审核通过后再跑。
 - **已通过门禁、首次拉 checkpoint**：体积大，**数分钟甚至更久** 属正常；可看 `HF_HOME` 下是否出现 `models--facebook--sam3` / `models--briaai--RMBG-2.0` 等目录持续增长。
 
+**门禁与账号常见坑**
+
+- 审核可能因资料、国家/地区、IP 等**未通过**；**同一账号被拒后，往往无法对同一门禁模型再次提交**，只能换账号或按 Hugging Face 支持渠道处理（以官网当时规则为准）。
+
+**易误解点：只克隆 GitHub 不能绕过权重门禁**
+
+- [facebookresearch/sam3](https://github.com/facebookresearch/sam3) 提供的是**代码**；上游 `build_sam3_image_model` 默认仍通过 **`huggingface_hub`** 从 **`facebook/sam3`**（或 **`facebook/sam3.1`**）拉取 **`config.json`** 与 **`sam3.pt`** 等，**并非**「安装完包就自动从 Meta 另一条 CDN 下载、无需 HF」。因此：**仅 `git clone` + `pip install -e .` 不能替代**你在 HF 上对官方仓库的访问权限。
+
+**HF 不顺手时的思路（择要）**
+
+| 做法 | 要点 |
+|------|------|
+| **换账号重新申请** | 若旧账号已拒且无法重提，需用**新 HF 账号**；资料与网络环境尽量稳定、一致。学术非商用可在申请说明里用简短英文自述（例：`I am a researcher at [Institution], need SAM3 for non-commercial academic experiments, I will comply with the license.`）。 |
+| **[HF-Mirror](https://hf-mirror.com/)** | 设置 `HF_ENDPOINT=https://hf-mirror.com` 可改善国内访问速度；**门禁模型仍须先在 huggingface.co 通过许可**，下载时配合 **`HF_TOKEN`**（镜像站说明：gated 仓库需带 token，镜像不能代替你在官网点「同意」）。PowerShell 示例：`$env:HF_ENDPOINT = "https://hf-mirror.com"`。 |
+| **第三方或镜像下来的权重** | 见下节 **「本地 SAM3 权重放哪、要不要 config」**。 |
+| **不用本地 SAM3** | Web/CLI 使用 **`roboflow` / `fal`**，可避免拉取 **`facebook/sam3`**（RMBG 仍可能要 HF，见上表）。 |
+
+**本地 SAM3 权重放哪、`config.json` 要不要？**
+
+- **推荐目录（本仓库约定）**：在项目根下建 **`models/sam3-local/`**，把**与官方兼容的 PyTorch 权重**保存为例如 **`models/sam3-local/sam3.pt`**（该目录已在 `.gitignore` 中忽略，避免误提交大文件）。
+- **`config.json` 要不要下？** 上游在 **走 Hub 默认下载**时会顺带拉 `config.json`，但 **`build_sam3_image_model` 的网络结构由代码写死**，加载权重时 **`_load_checkpoint` 只读 `.pt`**，**不读取 `config.json` 来拼模型**。因此：只要你用的是「官方同款 `sam3.pt`」并走本项目的 **本地权重开关**，**一般不必**再单独准备一份 `config.json`。
+- **格式**：当前加载逻辑是 **`torch.load` 的 `.pt` checkpoint**。社区常见的 **`sam3.safetensors` 不能直接当 `checkpoint_path` 用**，需自行转换为兼容的 `.pt` 或自行改加载代码（本项目未内置）。
+- **下载示例**（保存到推荐路径；若你拿到的是 safetensors，须先自行处理成 `.pt` 再往下做）：
+
+  ```powershell
+  New-Item -ItemType Directory -Force models\sam3-local | Out-Null
+  curl.exe -L "https://huggingface.co/1038lab/sam3/resolve/main/sam3.pt" -o models\sam3-local\sam3.pt
+  ```
+
+- **让 AutoFigure 真正用上该文件**：仅把文件放进目录**不会**自动生效，须二选一（**仅 `sam_backend=local` 时有效**）：
+  - 在 **`.env`** 中设置 **`SAM3_CHECKPOINT=models/sam3-local/sam3.pt`**（相对路径以**项目根**为基准），或
+  - CLI 增加 **`--sam3_checkpoint models/sam3-local/sam3.pt`**。  
+  Web API 可在请求 JSON 中传 **`sam3_checkpoint`**（相对项目根的路径，与 `server` 其它路径规则一致）。配置后程序会 **`load_from_HF=False`**，**跳过**从 `facebook/sam3` 拉权重。
+
 ### 6.5 SAM3：三种用法（择一）
 
 **SAM3 是什么：** 在 **AutoFigure-Edit** 里它负责对 **`figure.png` 这类示意图** 做**视觉分割**：按文字提示（如 icon、人物）找出多块区域并画框，不是对论文文本做「切分」。本质上是**图像上的区域/概念分割模型**。
@@ -182,7 +216,8 @@ uv pip install -r requirements.txt
      与 [官方安装步骤](https://github.com/facebookresearch/sam3#installation) 一致：再按官方说明安装对应 CUDA 的 `torch`/`torchvision`（示例见上游 README 中的 `cu128` 索引），需要跑 notebook 时再 `pip install -e ".[notebooks]"`（在 `vendor\sam3` 目录下执行）。
 
    - **Git：** 仓库根目录 `.gitignore` 已忽略 `vendor/sam3/`，避免把整份上游代码误提交；你本地照样用，只是默认不进 Git。
-   - **权重与门禁：** 与 **6.4** 中 **`facebook/sam3`** 为同一项：须在该模型页单独申请通过，并配置 **`HF_TOKEN`**（可与 RMBG 共用同一 Token）。
+   - **权重与门禁：** 与 **6.4** 中 **`facebook/sam3`** 为同一项：须在该模型页单独申请通过，并配置 **`HF_TOKEN`**（可与 RMBG 共用同一 Token）。若 HF 账号/地区受限，见 **6.4** 小节末尾「门禁与账号常见坑」及 **「本地 SAM3 权重放哪」**（`SAM3_CHECKPOINT` / `--sam3_checkpoint`）。
+   - **dtype 兼容：** 上游 `sam3.perflib.fused.addmm_act` 在部分环境下会把 ViT MLP 的 fc1 算成 **bfloat16**、fc2 仍为 **float32**，导致推理报错。本仓库 **`autofigure2.py`** 在本地 SAM 分支会把 **`sam3.model.vitdet.addmm_act`** 替换为全 **float32** 实现（略慢于融合算子，但与常见 `.pt` 权重一致）。
 
 ---
 
@@ -280,6 +315,9 @@ python autofigure2.py `
 
 - **本地 SAM 报 `GatedRepoError` / 403（`facebook/sam3`），或日志显示 `awaiting a review`**  
   **`facebook/sam3` 与 `briaai/RMBG-2.0` 是两处独立门禁**，须分别在模型页申请；同一 `HF_TOKEN` 即可，但两个页面都需已通过审核。刚提交申请时不会下载权重，见 **6.4**。
+
+- **HF 申请被拒、同账号无法再次申请**  
+  见 **6.4**「门禁与账号常见坑」：可换账号、Mirror 加速 + 仍须官网许可、或改用 **Roboflow/fal** 绕开本地 SAM3。勿误以为「只克隆 [facebookresearch/sam3](https://github.com/facebookresearch/sam3)」即可不经过 Hugging Face 下载官方权重。
 
 - **uvicorn 报错 `Response content longer than Content-Length`（拉取 `/api/artifacts/...`）**  
   任务运行中子进程仍在写入 `figure.png` 等文件时，旧版 `FileResponse` 可能按「打开瞬间」的文件长度声明 `Content-Length`，与传输中变大的文件不一致。当前 `server.py` 已改为整文件读入后再响应；若你仍用旧代码，请更新仓库后重启 `python server.py`。

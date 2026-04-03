@@ -63,3 +63,9 @@
 - **冒烟测试（仅步骤一+二、不需 LLM key）**：`python autofigure2.py --method_text "." --input_figure <path/to/figure.png> --output_dir outputs/_smoke_sam2 --sam_backend local --stop_after 2`（`method_text` 仅占位；有 `input_figure` 时 `stop_after=2` 不调用步骤 4+）。
 - **本机验证（2026-04-03）**：`psutil` 装好后已能完成 `sam3` 导入并进入 `build_sam3_image_model`；随后 HuggingFace 拉取 `facebook/sam3` 时若账号未授权会出现 **`GatedRepoError` / 403**，需在 [facebook/sam3](https://huggingface.co/facebook/sam3) 申请访问并在 `.env` 配置 **`HF_TOKEN`**（与 RMBG 相同机制）。
 
+## 七次排查（本地 `SAM3_CHECKPOINT` + 1038lab 权重：`BFloat16` vs `Float`）
+
+- 冒烟：`segment_with_sam3` 在 `processor.set_image` → ViT MLP `fc2` 报 **`mat1 and mat2 must have the same dtype, but got BFloat16 and Float`**。
+- 根因：**`sam3.perflib.fused.addmm_act`** 在推理时把 **fc1 的 matmul 输入/权重 cast 成 bfloat16**，输出 bf16 激活；**fc2** 仍是 **float32** `Linear`，dtype 不一致。与 checkpoint 是否第三方无关（1038lab 的 `.pt` 抽样为全 float32）。
+- 修复：`autofigure2.py` 在本地 SAM 分支 import `build_sam3_image_model` 后调用 **`_ensure_sam3_vit_mlp_fp32_activations()`**，把 **`sam3.model.vitdet.addmm_act`** 替换为 **`_sam3_addmm_act_fp32`**（标准 `linear` + `F.gelu`，全 float32）。
+

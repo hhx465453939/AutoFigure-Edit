@@ -16,6 +16,9 @@ vendor/sam3/
 # Hugging Face hub cache (default HF_HOME = models/huggingface)
 models/huggingface/
 
+# Local SAM3 weights (see doc/WINDOWS_DEPLOYMENT_ZH.md)
+models/sam3-local/
+
 # Local runtime artifacts
 outputs/
 uploads/

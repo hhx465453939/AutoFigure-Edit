@@ -71,6 +71,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 
 
+def _resolve_path_under_repo(path_str: str) -> Path:
+    """Resolve a path; relative paths are anchored at repo root (same idea as server uploads)."""
+    p = Path(path_str.strip())
+    if not p.is_absolute():
+        p = REPO_ROOT / p
+    return p.resolve()
+
+
 # ============================================================================
 # Runtime env loading (before torch / transformers so HF cache path is respected)
 # ============================================================================
@@ -1628,6 +1636,30 @@ def _call_sam3_roboflow_api(
     raise RuntimeError("SAM3 Roboflow 请求失败：未知错误")
 
 
+def _sam3_addmm_act_fp32(activation, linear, mat1):
+    """
+    sam3.model.vitdet.Mlp 默认调用 perflib.fused.addmm_act：把 matmul+GELU 强制算成 bfloat16，
+    而 fc2 仍是 float32 Linear，会在 torch 2.x + float32 checkpoint 下触发 BFloat16 vs Float 报错。
+    在 vitdet 模块上替换为纯 float32 路径（略慢于融合算子）。
+    """
+    if torch.is_grad_enabled():
+        raise ValueError("Expected grad to be disabled.")
+    x = linear(mat1)
+    if activation in (torch.nn.functional.relu, torch.nn.ReLU):
+        x = torch.nn.functional.relu(x)
+    elif activation in (torch.nn.functional.gelu, torch.nn.GELU):
+        x = torch.nn.functional.gelu(x)
+    else:
+        raise ValueError(f"Unexpected activation {activation}")
+    return x
+
+
+def _ensure_sam3_vit_mlp_fp32_activations() -> None:
+    import sam3.model.vitdet as sam3_vitdet
+
+    sam3_vitdet.addmm_act = _sam3_addmm_act_fp32
+
+
 def segment_with_sam3(
     image_path: str,
     output_dir: str,
@@ -1637,6 +1669,7 @@ def segment_with_sam3(
     sam_backend: Literal["local", "fal", "roboflow", "api"] = "local",
     sam_api_key: Optional[str] = None,
     sam_max_masks: int = 32,
+    sam3_checkpoint_path: Optional[str] = None,
 ) -> tuple[str, str, list]:
     """
     使用 SAM3 分割图片，用灰色填充+黑色边框+序号标记，生成 boxlib.json
@@ -1682,6 +1715,8 @@ def segment_with_sam3(
     if backend == "local":
         _ensure_sam3_edt_no_triton_fallback()
         from sam3.model_builder import build_sam3_image_model
+
+        _ensure_sam3_vit_mlp_fp32_activations()
         from sam3.model.sam3_image_processor import Sam3Processor
         import sam3
 
@@ -1693,7 +1728,22 @@ def segment_with_sam3(
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"使用设备: {device}")
-        model = build_sam3_image_model(device=device, bpe_path=str(bpe_path) if bpe_path else None)
+        ck_env = (os.environ.get("SAM3_CHECKPOINT") or "").strip()
+        ck_arg = (sam3_checkpoint_path or "").strip()
+        ck_raw = ck_arg or ck_env
+        if ck_raw:
+            ck_resolved = _resolve_path_under_repo(ck_raw)
+            if not ck_resolved.is_file():
+                raise FileNotFoundError(f"SAM3 本地权重不存在: {ck_resolved}")
+            print(f"使用本地 SAM3 权重（跳过 Hugging Face 下载）: {ck_resolved}")
+            model = build_sam3_image_model(
+                device=device,
+                bpe_path=str(bpe_path) if bpe_path else None,
+                checkpoint_path=str(ck_resolved),
+                load_from_HF=False,
+            )
+        else:
+            model = build_sam3_image_model(device=device, bpe_path=str(bpe_path) if bpe_path else None)
         processor = Sam3Processor(model, device=device)
         inference_state = processor.set_image(image)
 
@@ -2886,6 +2936,7 @@ def method_to_svg(
     sam_api_key: Optional[str] = None,
     sam_max_masks: int = 32,
     rmbg_model_path: Optional[str] = None,
+    sam3_checkpoint_path: Optional[str] = None,
     stop_after: int = 5,
     placeholder_mode: PlaceholderMode = "label",
     optimize_iterations: int = 2,
@@ -2909,6 +2960,7 @@ def method_to_svg(
         sam_api_key: SAM3 API Key（api 模式使用）
         sam_max_masks: SAM3 API 最大 masks 数（api 模式使用）
         rmbg_model_path: RMBG 模型路径
+        sam3_checkpoint_path: 本地 SAM3 权重 .pt（local 后端），或依赖环境变量 SAM3_CHECKPOINT
         stop_after: 执行到指定步骤后停止
         placeholder_mode: 占位符模式
             - "none": 无特殊样式
@@ -3003,6 +3055,7 @@ def method_to_svg(
         sam_backend=sam_backend_value,
         sam_api_key=sam_api_key,
         sam_max_masks=sam_max_masks,
+        sam3_checkpoint_path=sam3_checkpoint_path,
     )
 
     if len(valid_boxes) == 0:
@@ -3221,6 +3274,11 @@ if __name__ == "__main__":
         default=32,
         help="SAM3 API 最大 masks 数（仅 api 后端，默认: 32）",
     )
+    parser.add_argument(
+        "--sam3_checkpoint",
+        default=None,
+        help="本地 SAM3 权重路径（仅 sam_backend=local）：须为上游 torch.load 可读的 .pt；设置后跳过从 Hugging Face 拉取官方权重。相对路径以项目根为基准。也可用环境变量 SAM3_CHECKPOINT。",
+    )
 
     # RMBG 参数
     parser.add_argument("--rmbg_model_path", default=None, help="RMBG 模型本地路径（可选）")
@@ -3301,6 +3359,7 @@ if __name__ == "__main__":
         sam_api_key=args.sam_api_key,
         sam_max_masks=args.sam_max_masks,
         rmbg_model_path=args.rmbg_model_path,
+        sam3_checkpoint_path=args.sam3_checkpoint,
         stop_after=args.stop_after,
         placeholder_mode=args.placeholder_mode,
         optimize_iterations=args.optimize_iterations,
